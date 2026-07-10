@@ -115,8 +115,8 @@ function LightUpScreen:buildLayout()
         board      = self.board,
         max_width  = board_max,
         max_height = board_max,
-        onCellTap  = function(r, c) self:onCellTap(r, c) end,
-        onCellHold = function(r, c) self:onCellHold(r, c) end,
+        cellTapCallback  = function(r, c) self:onCellTap(r, c) end,
+        cellHoldCallback = function(r, c) self:onCellHold(r, c) end,
     }
 
     local board_frame = FrameContainer:new{
