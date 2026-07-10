@@ -29,8 +29,8 @@ local LightUpBoardWidget = InputContainer:extend{
     board      = nil,
     max_width  = 0,
     max_height = 0,
-    onCellTap  = nil,
-    onCellHold = nil,
+    cellTapCallback  = nil,
+    cellHoldCallback = nil,
 }
 
 function LightUpBoardWidget:init()
@@ -75,13 +75,13 @@ end
 
 function LightUpBoardWidget:onCellTap(ges)
     local r, c = self:_hitTest(ges.pos.x, ges.pos.y)
-    if r and self.onCellTap then self.onCellTap(r, c) end
+    if r and self.cellTapCallback then self.cellTapCallback(r, c) end
     return true
 end
 
 function LightUpBoardWidget:onCellHold(ges)
     local r, c = self:_hitTest(ges.pos.x, ges.pos.y)
-    if r and self.onCellHold then self.onCellHold(r, c) end
+    if r and self.cellHoldCallback then self.cellHoldCallback(r, c) end
     return true
 end
 
