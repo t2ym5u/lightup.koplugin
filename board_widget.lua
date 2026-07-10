@@ -49,8 +49,8 @@ function LightUpBoardWidget:init()
     self.paint_rect = nil
 
     self.ges_events = {
-        CellTap  = { GestureRange:new{ ges = "tap",          range = self.dimen } },
-        CellHold = { GestureRange:new{ ges = "hold_release", range = self.dimen } },
+        CellTap  = { GestureRange:new{ ges = "tap",          range = function() return self.paint_rect end } },
+        CellHold = { GestureRange:new{ ges = "hold_release", range = function() return self.paint_rect end } },
     }
 end
 
