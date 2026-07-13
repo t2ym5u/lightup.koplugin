@@ -73,13 +73,13 @@ function LightUpBoardWidget:_hitTest(gx, gy)
     return nil
 end
 
-function LightUpBoardWidget:onCellTap(ges)
+function LightUpBoardWidget:onCellTap(_, ges)
     local r, c = self:_hitTest(ges.pos.x, ges.pos.y)
     if r and self.cellTapCallback then self.cellTapCallback(r, c) end
     return true
 end
 
-function LightUpBoardWidget:onCellHold(ges)
+function LightUpBoardWidget:onCellHold(_, ges)
     local r, c = self:_hitTest(ges.pos.x, ges.pos.y)
     if r and self.cellHoldCallback then self.cellHoldCallback(r, c) end
     return true
@@ -123,7 +123,7 @@ function LightUpBoardWidget:paintTo(bb, x, y)
                 bb:paintRect(cx, cy, cell, cell, C_BLACK)
                 if ct >= TYPE_BLACK_0 and ct <= TYPE_BLACK_4 then
                     centeredText(bb, tostring(ct - TYPE_BLACK_0), self.num_face,
-                        cx + cell//2, cy + cell//2, C_WHITE_NUM)
+                        cx + math.floor(cell / 2), cy + math.floor(cell / 2), C_WHITE_NUM)
                 end
             else
                 -- White cell
@@ -135,15 +135,15 @@ function LightUpBoardWidget:paintTo(bb, x, y)
                 if mark == MARK_BULB then
                     -- Draw bulb: filled circle
                     local r2 = math.max(2, math.floor(cell * 0.3))
-                    bb:paintCircle(cx + cell//2, cy + cell//2, r2, C_BULB)
+                    bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2, C_BULB)
                     -- Inner highlight
                     if r2 > 3 then
-                        bb:paintCircle(cx + cell//2, cy + cell//2, r2 - 2, C_FG, true)
-                        bb:paintCircle(cx + cell//2, cy + cell//2, r2 - 2, C_BG, false)
+                        bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2 - 2, C_FG, true)
+                        bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2 - 2, C_BG, false)
                     end
                 elseif mark == MARK_DOT then
                     centeredText(bb, "\xC2\xB7", self.sym_face,
-                        cx + cell//2, cy + cell//2, C_FG)
+                        cx + math.floor(cell / 2), cy + math.floor(cell / 2), C_FG)
                 end
             end
         end

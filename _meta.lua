@@ -4,5 +4,5 @@ return {
     name        = "lightup",
     fullname    = _("Light Up"),
     description = _("Akari: place light bulbs to illuminate every white cell without conflicts."),
-    version     = "1.1.3",
+    version     = "1.1.4",
 }
