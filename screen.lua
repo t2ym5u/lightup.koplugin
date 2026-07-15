@@ -84,21 +84,14 @@ function LightUpScreen:buildLayout()
         and math.max(math.floor(sw * 0.35), 100)
         or  math.floor(sw * 0.9)
 
-    local top_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = btn_width,
-        buttons = {{
-            { text = _("New"),  callback = function() self:onNewGame() end },
-            { id = "size_btn",  text = self:_sizeLabel(),
-              callback = function() self:openSizeMenu() end },
-            { id = "diff_btn",  text = self:_diffLabel(),
-              callback = function() self:openDiffMenu() end },
+    local title_bar = self:buildTitleBar(_("Light Up"), function()
+        return {
+            { text = _("New game"),     callback = function() self:onNewGame() end },
+            { text = self:_sizeLabel(), callback = function() self:openSizeMenu() end },
+            { text = self:_diffLabel(), callback = function() self:openDiffMenu() end },
             self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
-            self:makeCloseButtonConfig(),
-        }},
-    }
-    self.size_btn = top_buttons:getButtonById("size_btn")
-    self.diff_btn = top_buttons:getButtonById("diff_btn")
+        }
+    end)
 
     local margin      = Size.margin.default
     local padding     = Size.padding.large
@@ -138,18 +131,17 @@ function LightUpScreen:buildLayout()
     if is_landscape then
         local panel = VerticalGroup:new{
             align = "center",
-            top_buttons,
-            VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
             VerticalSpan:new{ width = Size.span.vertical_large },
             bottom_buttons,
         }
-        self.layout = HorizontalGroup:new{
+        local content = HorizontalGroup:new{
             align  = "center",
             board_frame,
             HorizontalSpan:new{ width = Size.span.horizontal_default },
             panel,
         }
+        self:buildLandscapeLayout(title_bar, content)
     else
         local content = VerticalGroup:new{
             align = "center",
@@ -157,9 +149,8 @@ function LightUpScreen:buildLayout()
             VerticalSpan:new{ width = Size.span.vertical_large },
             self.status_text,
         }
-        self:buildPortraitLayout(top_buttons, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, content, bottom_buttons)
     end
-    self[1] = self.layout
     self:updateStatus()
 end
 
