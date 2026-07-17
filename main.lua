@@ -11,6 +11,8 @@ end
 
 local PluginBase    = require("plugin_base")
 local _             = require("gettext")
+
+require("i18n").extend(lrequire("i18n_fr"))
 local LightUpScreen = lrequire("screen")
 
 local LightUp = PluginBase:extend{
