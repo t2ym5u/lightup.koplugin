@@ -136,10 +136,12 @@ function LightUpBoardWidget:paintTo(bb, x, y)
                     -- Draw bulb: filled circle
                     local r2 = math.max(2, math.floor(cell * 0.3))
                     bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2, C_BULB)
-                    -- Inner highlight
+                    -- Inner highlight. paintCircle's 5th arg is a ring
+                    -- width, not a "filled" boolean: omit it for a filled
+                    -- disc, pass a small width for a thin outline.
                     if r2 > 3 then
-                        bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2 - 2, C_FG, true)
-                        bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2 - 2, C_BG, false)
+                        bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2 - 2, C_FG)
+                        bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2 - 2, C_BG, 1)
                     end
                 elseif mark == MARK_DOT then
                     centeredText(bb, "\xC2\xB7", self.sym_face,
