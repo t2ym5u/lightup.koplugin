@@ -52,6 +52,16 @@ Place light bulbs in white cells of a grid so that:
 Illumination zones are static fill patterns (hatching) that refresh only when
 bulbs are placed or removed. No animation is needed between moves.
 
+## Known limitations
+
+At 7×7 and 10×10, generated puzzles are unique (exactly one valid bulb
+placement) far more reliably than before. 14×14 is a documented partial
+improvement: the search space at that size is large enough that proving
+uniqueness is often too expensive within generation's time budget, so
+those puzzles fall back to an unverified layout more often than the
+smaller sizes (still fully valid and completable, just not proven to be
+the only possible solution).
+
 ## License
 
 GPL-3.0
