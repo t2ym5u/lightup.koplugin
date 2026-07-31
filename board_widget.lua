@@ -26,7 +26,7 @@ local C_GRID    = Blitbuffer.COLOR_GRAY_9
 local C_BLACK   = Blitbuffer.COLOR_GRAY_3
 local C_LIT     = Blitbuffer.COLOR_GRAY_E
 local C_BULB    = Blitbuffer.COLOR_GRAY_6
-local C_DOT     = Blitbuffer.COLOR_GRAY_C
+local C_DOT     = Blitbuffer.COLOR_LIGHT_GRAY
 local C_WRONG   = Blitbuffer.COLOR_GRAY_2
 local C_WHITE_NUM = Blitbuffer.COLOR_WHITE
 
