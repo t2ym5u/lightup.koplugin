@@ -126,6 +126,7 @@ function LightUpScreen:buildLayout()
         buttons = {{
             { text = _("Undo"),   callback = function() self:onUndo() end },
             { text = _("Check"),  callback = function() self:onCheck() end },
+            { text = _("Hint"), callback = function() self:onHint() end },
             { text = _("Reveal"), callback = function() self:onReveal() end },
         }},
     }

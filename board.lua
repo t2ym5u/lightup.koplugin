@@ -1,5 +1,6 @@
 local UndoStack  = require("undo_stack")
 local grid_utils = require("grid_utils")
+local Hint      = require("hint")
 
 local shuffle    = grid_utils.shuffle
 local emptyGrid  = grid_utils.emptyGrid
@@ -669,6 +670,19 @@ end
 -- ---------------------------------------------------------------------------
 -- Persistence
 -- ---------------------------------------------------------------------------
+
+-- Only bulbs decide the puzzle; a dot is an optional annotation, so cells
+-- without a bulb read as empty and equals() compares bulb-ness. Black cells
+-- take no marks at all.
+Hint.install(LightUpBoard, {
+    getUser     = function(b, r, c) return b.marks[r][c] end,
+    getSolution = function(b, r, c) return b.solution[r][c] and MARK_BULB or MARK_EMPTY end,
+    isEmpty     = function(v) return v == MARK_EMPTY end,
+    equals      = function(u, s) return (u == MARK_BULB) == (s == MARK_BULB) end,
+    isGiven     = function(b, r, c) return b.grid[r][c] ~= TYPE_WHITE end,
+    setCell     = function(b, r, c, v) return b:setMark(r, c, v) end,
+    blank       = MARK_EMPTY,
+})
 
 function LightUpBoard:serialize()
     local n = self.n

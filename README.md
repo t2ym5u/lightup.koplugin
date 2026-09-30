@@ -29,6 +29,7 @@ Place light bulbs in white cells of a grid so that:
 - **Constraint highlighting** — tap a numbered black cell to highlight its adjacent cells
 - **Illumination preview** — shows the lit area of a selected bulb
 - **Check** — highlights conflicts (two bulbs seeing each other, wrong adjacency count)
+- **Hint** — two taps: the first says which cell is about to give, the second acts on it. A cell that contradicts the solution is always reported before a fresh one is revealed
 - **Reveal solution** — shows the full solution
 - **Undo** — step back through your moves
 - **Auto-save** — game state saved and restored on next launch
