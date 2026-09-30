@@ -5,7 +5,7 @@ A Light Up (Akari) plugin for [KOReader](https://github.com/koreader/koreader).
 
 ## Screenshot
 
-*(Screenshot to be added.)*
+![Screenshot](images/lightup.png)
 
 ## Rules
 
