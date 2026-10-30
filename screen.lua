@@ -7,8 +7,6 @@ local function lrequire(name)
     return package.loaded[key]
 end
 
-local ButtonTable     = require("ui/widget/buttontable")
-local Device          = require("device")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
@@ -23,8 +21,6 @@ local ScreenBase         = require("screen_base")
 local MenuHelper         = require("menu_helper")
 local LightUpBoard       = lrequire("board")
 local LightUpBoardWidget = lrequire("board_widget")
-
-local DeviceScreen = Device.screen
 
 -- ---------------------------------------------------------------------------
 -- LightUpScreen
@@ -42,6 +38,8 @@ Rules:
 • Black cells with no number have no constraint on adjacent bulbs.
 
 Solve the puzzle when every white cell is lit and no bulb illuminates another.
+
+Tap a white cell to cycle: empty → bulb → dot → empty. Hold a cell to mark it with a dot (a cell that cannot hold a bulb); hold again to clear it.
 ]])
 
 local GAME_RULES_FR = [[
@@ -56,6 +54,8 @@ Règles :
 • Les cases noires sans chiffre n'ont aucune contrainte sur les ampoules adjacentes.
 
 Résolvez le puzzle quand toutes les cases blanches sont éclairées et qu'aucune ampoule n'en éclaire une autre.
+
+Appuyez sur une case blanche pour faire défiler : vide → ampoule → point → vide. Restez appuyé sur une case pour la marquer d'un point (case sans ampoule possible) ; restez appuyé à nouveau pour l'effacer.
 ]]
 
 local LightUpScreen = ScreenBase:extend{}
@@ -76,83 +76,60 @@ function LightUpScreen:serializeState()
 end
 
 function LightUpScreen:buildLayout()
-    local sw           = DeviceScreen:getWidth()
-    local sh = DeviceScreen:getHeight()
     local is_landscape = self:isLandscape()
-
-    local btn_width = is_landscape
-        and math.max(math.floor(sw * 0.35), 100)
-        or  math.floor(sw * 0.9)
 
     local title_bar = self:buildTitleBar(_("Light Up"), function()
         return {
             { text = _("New game"),     callback = function() self:onNewGame() end },
-            { text = self:_sizeLabel(), callback = function() self:openSizeMenu() end },
-            { text = self:_diffLabel(), callback = function() self:openDiffMenu() end },
+            { text = T(_("Size: %1"), self:_sizeLabel()), callback = function() self:openSizeMenu() end },
+            { text = T(_("Difficulty: %1"), self:_diffLabel()), callback = function() self:openDiffMenu() end },
             self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
         }
     end)
 
-    local margin      = Size.margin.default
-    local padding     = Size.padding.large
-    local frame_extra = (padding + margin) * 2
-    local board_max
-    if is_landscape then
-        board_max = math.min(sw - math.floor(sw * 0.4) - frame_extra, sh - frame_extra)
-    else
-        board_max = math.min(sw - frame_extra, sh - 160 - frame_extra)
-    end
-    board_max = math.max(board_max, 80)
+    -- Controls first: the board is sized from whatever room they leave.
+    self.status_text:setMaxWidth(self:getControlsWidth())
+    local controls = VerticalGroup:new{
+        align = "center",
+        self.status_text,
+        VerticalSpan:new{ width = Size.span.vertical_large },
+        self:buildActionBar({
+            { text = _("Undo"),   callback = function() self:onUndo() end },
+            { text = _("Check"),  callback = function() self:onCheck() end },
+            { text = _("Hint"),   callback = function() self:onHint() end },
+            { text = _("Reveal"), callback = function() self:onReveal() end },
+        }),
+    }
 
+    -- The widget draws its own outer border, so the frame only pads.
+    local frame_pad   = Size.padding.large
+    local frame_extra = 2 * frame_pad
+    local budget_w, budget_h = self:getBoardBudget(title_bar, controls)
     self.board_widget = LightUpBoardWidget:new{
         board      = self.board,
-        max_width  = board_max,
-        max_height = board_max,
+        max_width  = math.max(budget_w - frame_extra, 80),
+        max_height = math.max(budget_h - frame_extra, 80),
         cellTapCallback  = function(r, c) self:onCellTap(r, c) end,
         cellHoldCallback = function(r, c) self:onCellHold(r, c) end,
     }
-
     local board_frame = FrameContainer:new{
-        padding = padding,
-        margin  = margin,
+        padding    = frame_pad,
+        margin     = 0,
+        bordersize = 0,
         self.board_widget,
     }
 
-    self.status_text:setMaxWidth(is_landscape and btn_width or board_frame:getSize().w)
-
-    local bottom_buttons = ButtonTable:new{
-        shrink_unneeded_width = true,
-        width   = btn_width,
-        buttons = {{
-            { text = _("Undo"),   callback = function() self:onUndo() end },
-            { text = _("Check"),  callback = function() self:onCheck() end },
-            { text = _("Hint"), callback = function() self:onHint() end },
-            { text = _("Reveal"), callback = function() self:onReveal() end },
-        }},
-    }
-
     if is_landscape then
-        local panel = VerticalGroup:new{
-            align = "center",
-            self.status_text,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            bottom_buttons,
-        }
         local content = HorizontalGroup:new{
-            align  = "center",
+            align = "center",
             board_frame,
-            HorizontalSpan:new{ width = Size.span.horizontal_default },
-            panel,
+            HorizontalSpan:new{ width = self:getGutter() },
+            controls,
         }
         self:buildLandscapeLayout(title_bar, content)
     else
-        local content = VerticalGroup:new{
-            align = "center",
-            board_frame,
-            VerticalSpan:new{ width = Size.span.vertical_large },
-            self.status_text,
-        }
-        self:buildPortraitLayout(title_bar, content, bottom_buttons)
+        self:buildPortraitLayout(title_bar, board_frame,
+            VerticalGroup:new{ align = "center", controls, VerticalSpan:new{ width = self:getGutter() } })
     end
     self:updateStatus()
 end
@@ -162,6 +139,7 @@ function LightUpScreen:onCellTap(r, c)
     self.board_widget:refresh()
     self:updateStatus()
     self.plugin:saveState(self.board:serialize())
+    self:refreshActionBar()
 end
 
 function LightUpScreen:onCellHold(r, c)
@@ -169,6 +147,7 @@ function LightUpScreen:onCellHold(r, c)
     self.board_widget:refresh()
     self:updateStatus()
     self.plugin:saveState(self.board:serialize())
+    self:refreshActionBar()
 end
 
 function LightUpScreen:onUndo()
@@ -176,6 +155,7 @@ function LightUpScreen:onUndo()
     self.board_widget:refresh()
     self:updateStatus()
     self.plugin:saveState(self.board:serialize())
+    self:refreshActionBar()
 end
 
 function LightUpScreen:onCheck()
@@ -189,6 +169,17 @@ function LightUpScreen:onReveal()
     self.board_widget:refresh()
     self:updateStatus(_("Solution revealed."))
     self.plugin:saveState(self.board:serialize())
+    self:refreshActionBar()
+end
+
+function LightUpScreen:isRoundOver()
+    return self.board.won
+end
+
+-- A hint can place the last cell, so the round may end here.
+function LightUpScreen:onHint()
+    ScreenBase.onHint(self)
+    self:refreshActionBar()
 end
 
 function LightUpScreen:onNewGame()
@@ -206,7 +197,7 @@ function LightUpScreen:openSizeMenu()
         items[#items + 1] = { id = n, text = string.format("%d\xC3\x97%d", n, n) }
     end
     MenuHelper.openPickerMenu{
-        title      = _("Grid size"),
+        title      = _("Select size"),
         items      = items,
         current_id = self.plugin:getSetting("grid_n", LightUpBoard.DEFAULT_N),
         parent     = self,
@@ -253,8 +244,9 @@ function LightUpScreen:updateStatus(msg)
                 end
             end
         end
-        status = T(_("Lit: %1/%2  Bulbs: %3  Tap=cycle  Hold=dot"),
-            lit_cnt, white_cnt, bulb_cnt)
+        status = self:joinStatus(
+            T("%1×%1", n), self:_diffLabel(),
+            T(_("Lit: %1/%2"), lit_cnt, white_cnt), T(_("Bulbs: %1"), bulb_cnt))
     end
     ScreenBase.updateStatus(self, status)
 end
