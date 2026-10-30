@@ -8,6 +8,7 @@ local function lrequire(name)
 end
 
 local Blitbuffer     = require("ffi/blitbuffer")
+local Device         = require("device")
 local Font           = require("ui/font")
 local Geom           = require("ui/geometry")
 local GestureRange   = require("ui/gesturerange")
@@ -19,6 +20,8 @@ local gwb      = lrequire("common/grid_widget_base")
 local drawLine = gwb.drawLine
 
 local LightUpBoard = lrequire("board")
+
+local Screen = Device.screen
 
 local C_BG      = Blitbuffer.COLOR_WHITE
 local C_FG      = Blitbuffer.COLOR_BLACK
@@ -51,9 +54,12 @@ function LightUpBoardWidget:init()
     self.h    = cell * n
     self.dimen = Geom:new{ w = self.w, h = self.h }
 
-    local fs = math.max(7, math.floor(cell * 0.5))
+    -- Font:getFace scales its size by the screen DPI; these sizes are already
+    -- pixels (a fraction of the cell), so undo that scaling or the digits
+    -- outgrow their cells on high-DPI screens.
+    local px = Screen:scaleBySize(1000) / 1000
+    local fs = math.max(7, math.floor(cell * 0.7 / px))
     self.num_face = Font:getFace("cfont", fs)
-    self.sym_face = Font:getFace("cfont", math.max(6, math.floor(cell * 0.55)))
 
     self.paint_rect = nil
 
@@ -153,8 +159,9 @@ function LightUpBoardWidget:paintTo(bb, x, y)
                         bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2), r2 - 2, C_BG, 1)
                     end
                 elseif mark == MARK_DOT then
-                    centeredText(bb, "\xC2\xB7", self.sym_face,
-                        cx + math.floor(cell / 2), cy + math.floor(cell / 2), C_FG)
+                    -- A painted disc: the "·" glyph was a few pixels wide.
+                    bb:paintCircle(cx + math.floor(cell / 2), cy + math.floor(cell / 2),
+                        math.max(2, math.floor(cell * 0.09)), C_FG)
                 end
             end
         end

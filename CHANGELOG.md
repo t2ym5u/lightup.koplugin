@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-10-30
+
+### Added
+- "New game" once the puzzle is solved (or revealed): the action bar shows
+  it in place of Undo, Check, Hint and Reveal, so the next puzzle no longer
+  needs the menu.
+
+### Changed
+- Redesigned play screen, in line with the other games: a full-width action
+  bar, a larger board that fills the available room, and one frame around
+  it. The status line reads "size · difficulty · Lit: n/m · Bulbs: n" and
+  wraps in landscape instead of being cut off; the tap/hold help moved from
+  the status line to the rules.
+- Title-bar menu shows the current values: "Size: …" and "Difficulty: …"
+  instead of bare values.
+- The dot marking a cell that can't hold a bulb is a painted disc, easier to
+  see than the tiny "·" glyph it replaces.
+- New README screenshot.
+
+### Fixed
+- Using Hint wiped the saved game: the board was saved as nothing. And when
+  a hint fills the last cell, the status now shows the win message.
+- Clue digits outgrew their cells on high-DPI screens.
+
 ## [1.2.2] - 2026-10-07
 
 ### Fixed
