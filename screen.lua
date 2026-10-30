@@ -81,6 +81,7 @@ function LightUpScreen:buildLayout()
     local title_bar = self:buildTitleBar(_("Light Up"), function()
         return {
             { text = _("New game"),     callback = function() self:onNewGame() end },
+            self:makeDailyButtonConfig(),
             { text = T(_("Size: %1"), self:_sizeLabel()), callback = function() self:openSizeMenu() end },
             { text = T(_("Difficulty: %1"), self:_diffLabel()), callback = function() self:openDiffMenu() end },
             self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR),
