@@ -169,32 +169,48 @@ end
 -- adjacent-bulb count matches exactly is accepted. Real uniqueness means:
 -- is there only ONE such placement given this black-cell/wall layout?
 -- Constraint propagation to a fixed point before every branch, using the
--- two classic Akari deduction rules -- wall forcing (a numbered wall's
--- remaining undecided neighbors get forced to bulb/not-bulb once there's
--- only one way left to satisfy its count) and illumination forcing (a
--- not-yet-lit cell with exactly one remaining candidate across its row+col
--- segments must be a bulb) -- since a naive per-cell backtracking without
--- this explores enormous numbers of locally-valid-but-globally-unlit dead
--- ends.
+-- classic Akari deduction rules -- a bulb rules out the rest of its row and
+-- column segments, wall forcing (a numbered wall's remaining undecided
+-- neighbors get forced to bulb/not-bulb once there's only one way left to
+-- satisfy its count) and illumination forcing (a not-yet-lit cell with
+-- exactly one remaining candidate across its row+col segments must be a
+-- bulb) -- then branching on a candidate bulb of the unlit cell with the
+-- fewest candidates. Returns (count, exhausted, first, second) with the
+-- first two solutions found as bulb grids.
+--
+-- 1.5.0: cells and segments are plain integer-indexed arrays and the
+-- search keeps one undo trail; the old version (string segment keys, fresh
+-- tables at every step, branching on the first unlit cell) ran out of its
+-- node budget on most 14x14 layouts and took up to 6 s per 10x10 Easy
+-- puzzle on a desktop. Same counts, checked against it on random layouts.
 -- ---------------------------------------------------------------------------
 
-local function buildSegments(grid, n)
-    local row_seg, col_seg = {}, {}
-    for r = 1, n do row_seg[r] = {}; col_seg[r] = {} end
-    local row_cells, col_cells = {}, {}
-
+local function countSolutions(grid, n, limit, node_budget)
+    -- White cells 1..W, their row/column segments, the numbered walls.
+    local idx, cr, cc = {}, {}, {}
+    local W = 0
+    for r = 1, n do
+        idx[r] = {}
+        for c = 1, n do
+            if grid[r][c] == TYPE_WHITE then
+                W = W + 1
+                idx[r][c], cr[W], cc[W] = W, r, c
+            end
+        end
+    end
+    local rseg, cseg, seg_cells, S = {}, {}, {}, 0
     for r = 1, n do
         local c = 1
         while c <= n do
-            if grid[r][c] == TYPE_WHITE then
-                local id = "r" .. r .. "_" .. c
-                local cells = {}
-                while c <= n and grid[r][c] == TYPE_WHITE do
-                    row_seg[r][c] = id
-                    cells[#cells + 1] = { r, c }
+            if idx[r][c] then
+                S = S + 1
+                local list = {}
+                while c <= n and idx[r][c] do
+                    rseg[idx[r][c]] = S
+                    list[#list + 1] = idx[r][c]
                     c = c + 1
                 end
-                row_cells[id] = cells
+                seg_cells[S] = list
             else
                 c = c + 1
             end
@@ -203,123 +219,132 @@ local function buildSegments(grid, n)
     for c = 1, n do
         local r = 1
         while r <= n do
-            if grid[r][c] == TYPE_WHITE then
-                local id = "c" .. r .. "_" .. c
-                local cells = {}
-                while r <= n and grid[r][c] == TYPE_WHITE do
-                    col_seg[r][c] = id
-                    cells[#cells + 1] = { r, c }
+            if idx[r][c] then
+                S = S + 1
+                local list = {}
+                while r <= n and idx[r][c] do
+                    cseg[idx[r][c]] = S
+                    list[#list + 1] = idx[r][c]
                     r = r + 1
                 end
-                col_cells[id] = cells
+                seg_cells[S] = list
             else
                 r = r + 1
             end
         end
     end
-    return row_seg, col_seg, row_cells, col_cells
-end
-
-local function countSolutions(grid, n, limit, node_budget)
-    local row_seg, col_seg, row_cells, col_cells = buildSegments(grid, n)
-
-    local decided = {}
-    for r = 1, n do decided[r] = {} end
-    local row_seg_bulb, col_seg_bulb = {}, {}
-
-    local solutions, nodes, exhausted = 0, 0, false
-
-    local function wallNeighbors(r, c)
-        local nbrs = {}
-        for _, d in ipairs(DIR4) do
-            local nr, nc = r + d[1], c + d[2]
-            if inBounds(nr, nc, n) and grid[nr][nc] == TYPE_WHITE then
-                nbrs[#nbrs + 1] = { nr, nc }
+    local walls, wall_need = {}, {}
+    for r = 1, n do
+        for c = 1, n do
+            local t = grid[r][c]
+            if t >= TYPE_BLACK_0 and t <= TYPE_BLACK_4 then
+                local nb = {}
+                for _, d in ipairs(DIR4) do
+                    local nr, nc = r + d[1], c + d[2]
+                    if nr >= 1 and nr <= n and nc >= 1 and nc <= n and idx[nr][nc] then
+                        nb[#nb + 1] = idx[nr][nc]
+                    end
+                end
+                walls[#walls + 1] = nb
+                wall_need[#walls] = t - TYPE_BLACK_0
             end
         end
-        return nbrs
     end
 
-    -- Checks the conflict BEFORE recording any state change -- a failed
-    -- call must leave everything untouched, otherwise undo() (which
-    -- decides whether to clear a segment's bulb flag based on whether
-    -- THIS cell is currently marked true) could wipe out a genuinely
-    -- different cell's legitimate bulb registration in the same segment.
-    local function setDecided(r, c, val, changes)
-        if decided[r][c] ~= nil then
-            return decided[r][c] == val
+    local val = {}          -- nil undecided / true bulb / false no bulb
+    local seg_bulb = {}     -- segment -> true when it holds a bulb
+    for s = 1, S do seg_bulb[s] = false end
+    local trail, top = {}, 0
+
+    local function set(i, v)
+        local cur = val[i]
+        if cur ~= nil then return cur == v end
+        if v and (seg_bulb[rseg[i]] or seg_bulb[cseg[i]]) then return false end
+        val[i] = v
+        top = top + 1
+        trail[top] = i
+        if v then
+            seg_bulb[rseg[i]] = true
+            seg_bulb[cseg[i]] = true
         end
-        if val then
-            local rs, cs = row_seg[r][c], col_seg[r][c]
-            if row_seg_bulb[rs] or col_seg_bulb[cs] then return false end
-            row_seg_bulb[rs] = true
-            col_seg_bulb[cs] = true
-        end
-        decided[r][c] = val
-        changes[#changes + 1] = { r, c }
         return true
     end
-
-    local function isLit(r, c)
-        return row_seg_bulb[row_seg[r][c]] or col_seg_bulb[col_seg[r][c]]
+    local function undoTo(mark)
+        while top > mark do
+            local i = trail[top]
+            if val[i] then
+                seg_bulb[rseg[i]] = false
+                seg_bulb[cseg[i]] = false
+            end
+            val[i] = nil
+            trail[top] = nil
+            top = top - 1
+        end
     end
 
-    local function propagate(changes)
+    -- Fixed point of: a bulb rules out the rest of its two segments; a wall
+    -- with its count reached rules out its other neighbours, one that needs
+    -- all its undecided neighbours takes them; an unlit cell with a single
+    -- possible bulb (in its row or column segment) takes it. Returns false
+    -- on a contradiction.
+    local function propagate()
         local progressed = true
         while progressed do
             progressed = false
-            for r = 1, n do
-                for c = 1, n do
-                    local ct = grid[r][c]
-                    if ct >= TYPE_BLACK_0 and ct <= TYPE_BLACK_4 then
-                        local required = ct - TYPE_BLACK_0
-                        local nbrs = wallNeighbors(r, c)
-                        local have, undecided = 0, {}
-                        for _, cell in ipairs(nbrs) do
-                            local v = decided[cell[1]][cell[2]]
-                            if v == true then have = have + 1
-                            elseif v == nil then undecided[#undecided + 1] = cell end
-                        end
-                        if have > required or have + #undecided < required then
-                            return false
-                        end
-                        if #undecided > 0 then
-                            if have == required then
-                                for _, cell in ipairs(undecided) do
-                                    if not setDecided(cell[1], cell[2], false, changes) then return false end
-                                end
-                                progressed = true
-                            elseif have + #undecided == required then
-                                for _, cell in ipairs(undecided) do
-                                    if not setDecided(cell[1], cell[2], true, changes) then return false end
-                                end
+            for i = 1, W do
+                if val[i] then
+                    for pass = 1, 2 do
+                        local list = seg_cells[pass == 1 and rseg[i] or cseg[i]]
+                        for t = 1, #list do
+                            local j = list[t]
+                            if val[j] == nil then
+                                if not set(j, false) then return false end
                                 progressed = true
                             end
                         end
                     end
                 end
             end
-            for r = 1, n do
-                for c = 1, n do
-                    if grid[r][c] == TYPE_WHITE and not isLit(r, c) then
-                        local cand, seen = {}, {}
-                        for _, cell in ipairs(row_cells[row_seg[r][c]]) do
-                            local key = cell[1] * 1000 + cell[2]
-                            if decided[cell[1]][cell[2]] == nil and not seen[key] then
-                                seen[key] = true; cand[#cand + 1] = cell
+            for w = 1, #walls do
+                local have, und = 0, 0
+                local nb = walls[w]
+                for t = 1, #nb do
+                    local v = val[nb[t]]
+                    if v then have = have + 1 elseif v == nil then und = und + 1 end
+                end
+                local need = wall_need[w]
+                if have > need or have + und < need then return false end
+                if und > 0 and (have == need or have + und == need) then
+                    local to = have < need
+                    for t = 1, #nb do
+                        if val[nb[t]] == nil then
+                            if not set(nb[t], to) then return false end
+                        end
+                    end
+                    progressed = true
+                end
+            end
+            for i = 1, W do
+                if not seg_bulb[rseg[i]] and not seg_bulb[cseg[i]] then
+                    -- i itself sits in both segments: count it once
+                    local cand, count = nil, val[i] == nil and 1 or 0
+                    if count == 1 then cand = i end
+                    for pass = 1, 2 do
+                        local list = seg_cells[pass == 1 and rseg[i] or cseg[i]]
+                        for t = 1, #list do
+                            local j = list[t]
+                            if j ~= i and val[j] == nil then
+                                count = count + 1
+                                cand = j
+                                if count > 1 then break end
                             end
                         end
-                        for _, cell in ipairs(col_cells[col_seg[r][c]]) do
-                            local key = cell[1] * 1000 + cell[2]
-                            if decided[cell[1]][cell[2]] == nil and not seen[key] then
-                                seen[key] = true; cand[#cand + 1] = cell
-                            end
-                        end
-                        if #cand == 0 then return false end
-                        if #cand == 1 then
-                            if not setDecided(cand[1][1], cand[1][2], true, changes) then return false end
-                            progressed = true
-                        end
+                        if count > 1 then break end
+                    end
+                    if count == 0 then return false end
+                    if count == 1 then
+                        if not set(cand, true) then return false end
+                        progressed = true
                     end
                 end
             end
@@ -327,110 +352,155 @@ local function countSolutions(grid, n, limit, node_budget)
         return true
     end
 
-    local function undo(changes, from)
-        for i = #changes, from, -1 do
-            local r, c = changes[i][1], changes[i][2]
-            if decided[r][c] == true then
-                row_seg_bulb[row_seg[r][c]] = false
-                col_seg_bulb[col_seg[r][c]] = false
-            end
-            decided[r][c] = nil
-            changes[i] = nil
-        end
-    end
-
-    local function allDecided()
-        for r = 1, n do
-            for c = 1, n do
-                if grid[r][c] == TYPE_WHITE and decided[r][c] == nil then return false end
-            end
-        end
-        return true
-    end
-
-    local function pickBranchCell()
-        for r = 1, n do
-            for c = 1, n do
-                if grid[r][c] == TYPE_WHITE and not isLit(r, c) then
-                    for _, cell in ipairs(row_cells[row_seg[r][c]]) do
-                        if decided[cell[1]][cell[2]] == nil then return cell[1], cell[2] end
-                    end
-                    for _, cell in ipairs(col_cells[col_seg[r][c]]) do
-                        if decided[cell[1]][cell[2]] == nil then return cell[1], cell[2] end
-                    end
-                end
-            end
-        end
-        for r = 1, n do
-            for c = 1, n do
-                if grid[r][c] == TYPE_WHITE and decided[r][c] == nil then return r, c end
-            end
-        end
-        return nil
-    end
+    local solutions, nodes, exhausted = 0, 0, false
+    local found = {}
 
     local function search()
         if solutions >= limit or exhausted then return end
         nodes = nodes + 1
         if nodes > node_budget then exhausted = true; return end
-
-        local changes = {}
-        if not propagate(changes) then
-            undo(changes, 1)
-            return
-        end
-
-        if allDecided() then
-            solutions = solutions + 1
-            undo(changes, 1)
-            return
-        end
-
-        local r, c = pickBranchCell()
-        if not r then
-            undo(changes, 1)
-            return
-        end
-
-        for _, val in ipairs({ true, false }) do
-            local branch_changes = {}
-            if setDecided(r, c, val, branch_changes) then
-                search()
+        local mark = top
+        if not propagate() then undoTo(mark); return end
+        -- Branch on a candidate bulb of the unlit cell with the fewest.
+        local best_i, best_count = nil, math.huge
+        for i = 1, W do
+            if not seg_bulb[rseg[i]] and not seg_bulb[cseg[i]] then
+                local count, first = 0, nil
+                if val[i] == nil then count, first = 1, i end
+                for pass = 1, 2 do
+                    local list = seg_cells[pass == 1 and rseg[i] or cseg[i]]
+                    for t = 1, #list do
+                        local j = list[t]
+                        if j ~= i and val[j] == nil then count = count + 1; first = first or j end
+                    end
+                end
+                if count < best_count then best_count, best_i = count, first end
             end
-            undo(branch_changes, 1)
+        end
+        if not best_i then
+            -- Everything lit; propagation has ruled out every other cell
+            -- (each sits in a lit segment) and the walls are consistent:
+            -- all undecided cells are forced false already.
+            for i = 1, W do
+                if val[i] == nil then best_i = i; break end
+            end
+            if not best_i then
+                solutions = solutions + 1
+                if solutions <= 2 then
+                    local sol = {}
+                    for r = 1, n do
+                        sol[r] = {}
+                        for c = 1, n do sol[r][c] = (idx[r][c] and val[idx[r][c]]) == true end
+                    end
+                    found[solutions] = sol
+                end
+                undoTo(mark)
+                return
+            end
+        end
+        for _, v in ipairs({ true, false }) do
+            local m2 = top
+            if set(best_i, v) then search() end
+            undoTo(m2)
             if solutions >= limit or exhausted then break end
         end
-        undo(changes, 1)
+        undoTo(mark)
     end
-
     search()
-    return solutions, exhausted
+    return solutions, exhausted, found[1], found[2]
 end
-
-local function uniquenessNodeBudget(n)
-    if n <= 10 then return 6000 end
-    return 2000
-end
-
--- n=14's search space is large enough that even generous budgets mostly
--- just exhaust without concluding (measured: repeatedly grinding ~7s only
--- to fall back to the same ambiguous result as before the fix, i.e. pure
--- wasted latency, not improved quality) -- so effort is scaled down hard
--- there to fail fast, same "partial fix, never worse" tradeoff as
--- nurikabe/starbattle's hardest settings. n<=10 generates fast enough
--- (<2s even at full effort) to spend a much bigger budget productively.
-local function retryBudgetsFor(n)
-    if n <= 10 then return 12, 3 end -- base_attempts, numbers_attempts
-    return 3, 1
-end
+-- Node counts, not time, so a seed gives the same puzzle on any device;
+-- the counter concludes well within this on every layout measured.
+local NODE_BUDGET = 100000
 
 -- Escalating reveal ratios: the nominal ~60% reveal (matching the genre's
 -- usual difficulty feel) is frequently ambiguous, especially at low black-
 -- cell density ("easy"), but more revealed wall numbers can only ADD
 -- constraints, never remove any -- so if the nominal ratio keeps coming
--- back ambiguous, try progressively denser reveals before giving up on
--- this base layout entirely. Same escalation shape as hitori's fix.
+-- back ambiguous, try progressively denser reveals before tweaking the
+-- layout. Same escalation shape as hitori's fix.
 local REVEAL_LEVELS = { 0.6, 0.8, 1.0 }
+
+-- Still ambiguous with every wall numbered: pick a cell where a rival
+-- solution has a bulb and ours doesn't (or, failing that, one whose count
+-- of adjacent bulbs differs between the two), and turn it into a numbered
+-- wall (its count of our bulbs). Our solution stays valid as long as every
+-- white cell is still lit (the new wall only blocks light); the rival is
+-- gone. Repeat until unique, or give up on this layout.
+local MAX_WALL_TWEAKS = 16
+
+local function stillLit(grid, bulbs, n)
+    local lit = emptyBoolGrid(n, n)
+    for r = 1, n do
+        for c = 1, n do
+            if bulbs[r][c] then markLit(lit, nil, grid, r, c, n) end
+        end
+    end
+    for r = 1, n do
+        for c = 1, n do
+            if grid[r][c] == TYPE_WHITE and not lit[r][c] then return false end
+        end
+    end
+    return true
+end
+
+local function tweakUntilUnique(grid, bulbs, n, rival)
+    for step = 1, MAX_WALL_TWEAKS do
+        -- A rival bulb's cell first; else any cell whose wall number would
+        -- tell the two apart (a different count of adjacent bulbs).
+        local cands, others = {}, {}
+        for r = 1, n do
+            for c = 1, n do
+                if grid[r][c] == TYPE_WHITE and not bulbs[r][c] then
+                    if rival[r][c] then
+                        cands[#cands + 1] = { r, c }
+                    else
+                        local diff = 0
+                        for _, d in ipairs(DIR4) do
+                            local nr, nc = r + d[1], c + d[2]
+                            if inBounds(nr, nc, n) then
+                                if bulbs[nr][nc] then diff = diff + 1 end
+                                if rival[nr][nc] then diff = diff - 1 end
+                            end
+                        end
+                        if diff ~= 0 then others[#others + 1] = { r, c } end
+                    end
+                end
+            end
+        end
+        shuffle(cands)
+        shuffle(others)
+        for _, cell in ipairs(others) do cands[#cands + 1] = cell end
+        local placed = false
+        for _, cell in ipairs(cands) do
+            local r, c = cell[1], cell[2]
+            grid[r][c] = TYPE_BLACK
+            if stillLit(grid, bulbs, n) then
+                local adj = 0
+                for _, d in ipairs(DIR4) do
+                    local nr, nc = r + d[1], c + d[2]
+                    if inBounds(nr, nc, n) and bulbs[nr][nc] then adj = adj + 1 end
+                end
+                grid[r][c] = TYPE_BLACK_0 + adj
+                placed = true
+                break
+            end
+            grid[r][c] = TYPE_WHITE
+        end
+        if not placed then return false, step - 1 end
+        local solutions, exhausted, first, second = countSolutions(grid, n, 2, NODE_BUDGET)
+        if exhausted or solutions == 0 then return false, step end
+        if solutions == 1 then return true, step end
+        rival = second
+        for r = 1, n do
+            for c = 1, n do
+                if first[r][c] ~= bulbs[r][c] then rival = first; break end
+            end
+            if rival == first then break end
+        end
+    end
+    return false, MAX_WALL_TWEAKS
+end
 
 -- ---------------------------------------------------------------------------
 -- LightUpBoard
@@ -452,7 +522,9 @@ function LightUpBoard:new(opts)
         won        = false,
         undo       = UndoStack:new{ max_size = 500 },
     }, self)
-    obj:generate()
+    -- opts.empty: the caller loads a save or generates right after (with
+    -- the progress bar), so skip the throwaway puzzle.
+    if not opts.empty then obj:generate() end
     return obj
 end
 
@@ -463,48 +535,60 @@ end
 -- at hard). Repicking which black cells reveal their wall number (for the
 -- SAME base black-cell+bulb layout) is much cheaper than regenerating that
 -- layout from scratch, and more revealed numbers can only add constraints
--- -- same lever as shikaku's clue-cell repositioning. An initial version
--- that retried the nominal ~60% reveal 20 times per base layout (30 base
--- layouts) had a real worst-case latency problem (tens of seconds,
--- occasionally more) -- most of those attempts were doomed from the start
--- at low black-cell density ("easy"), where 60% reveal rarely disambiguates
--- no matter how many times it's re-rolled. Rewritten to escalate the
--- reveal ratio in bounded steps (0.6 -> 0.8 -> 1.0) when the nominal ratio
--- keeps coming back ambiguous, same shape as hitori's density escalation,
--- with a much smaller per-attempt node budget (fail an inconclusive
--- attempt fast and move on, rather than grinding a large budget on a hard
--- one -- the same lesson tuned into starbattle's fix).
-function LightUpBoard:generate(diff)
+-- -- same lever as shikaku's clue-cell repositioning: the reveal ratio
+-- escalates in bounded steps (0.6 -> 0.8 -> 1.0), same shape as hitori's
+-- density escalation.
+--
+-- Up to 1.4, low black-cell density ("easy") often stayed ambiguous even
+-- with every wall numbered: 10x10 Easy shipped an unproven layout ~80% of
+-- the time and 14x14 Easy nearly always, after up to 6 s of retries on a
+-- desktop (minutes on a Kobo). Now a layout still ambiguous at full reveal
+-- gets a few extra numbered walls (tweakUntilUnique) until it is unique.
+function LightUpBoard:generate(diff, on_progress)
     self.difficulty = diff or self.difficulty
     local n = self.n
     local density = BLACK_DENSITY[self.difficulty] or 0.28
-    local node_budget = uniquenessNodeBudget(n)
-    local base_attempts, numbers_attempts = retryBudgetsFor(n)
+    local base_attempts = 8
 
     local best_grid, best_sol
 
     for base_attempt = 1, base_attempts do
+        if on_progress then on_progress((base_attempt - 1) / base_attempts) end
         local base_grid, bulbs = generateBaseSolution(n, density)
         if base_grid then
+            local grid, rival
             for _, reveal_ratio in ipairs(REVEAL_LEVELS) do
-                for numbers_attempt = 1, numbers_attempts do
-                    local grid = assignWallNumbers(base_grid, bulbs, n, reveal_ratio)
+                grid = assignWallNumbers(base_grid, bulbs, n, reveal_ratio)
 
-                    if not best_grid then
-                        best_grid, best_sol = grid, bulbs
-                    end
+                if not best_grid then
+                    best_grid, best_sol = grid, bulbs
+                end
 
-                    local solutions, exhausted = countSolutions(grid, n, 2, node_budget)
-                    if solutions == 1 and not exhausted then
-                        self.grid        = grid
-                        self.solution    = bulbs
-                        self.marks       = emptyGrid(n, n, MARK_EMPTY)
-                        self.wrong_cells = emptyBoolGrid(n, n)
-                        self.won         = false
-                        self.undo:clear()
-                        self:_recomputeLit()
-                        return
+                local solutions, exhausted, first, second = countSolutions(grid, n, 2, NODE_BUDGET)
+                local unique = solutions == 1 and not exhausted
+                if not unique and not exhausted and solutions >= 2 then
+                    rival = second
+                    for r = 1, n do
+                        for c = 1, n do
+                            if first[r][c] ~= bulbs[r][c] then rival = first; break end
+                        end
+                        if rival == first then break end
                     end
+                else
+                    rival = nil
+                end
+                if not unique and rival and reveal_ratio == REVEAL_LEVELS[#REVEAL_LEVELS] then
+                    unique = tweakUntilUnique(grid, bulbs, n, rival)
+                end
+                if unique then
+                    self.grid        = grid
+                    self.solution    = bulbs
+                    self.marks       = emptyGrid(n, n, MARK_EMPTY)
+                    self.wrong_cells = emptyBoolGrid(n, n)
+                    self.won         = false
+                    self.undo:clear()
+                    self:_recomputeLit()
+                    return
                 end
             end
         end
@@ -741,5 +825,10 @@ LightUpBoard.MARK_DOT     = MARK_DOT
 LightUpBoard.SIZES        = SIZES
 LightUpBoard.DEFAULT_N    = DEFAULT_N
 LightUpBoard.DIR4         = DIR4
+
+-- for the specs
+LightUpBoard._countSolutions       = countSolutions
+LightUpBoard._generateBaseSolution = generateBaseSolution
+LightUpBoard._assignWallNumbers    = assignWallNumbers
 
 return LightUpBoard
