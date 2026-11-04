@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-11-04
+
+### Changed
+- Every puzzle now has exactly one solution. Easy grids were often
+  ambiguous even with every wall numbered (10×10 Easy about 4 times in 5,
+  14×14 Easy nearly always); such a grid now gets a few extra numbered
+  walls where the other solutions differ (Easy grids have about 2-3% more
+  black cells than before). Puzzles are new.
+- Much faster: 10×10 Easy took up to 6 s on a desktop (minutes on a Kobo),
+  now under 0.02 s; every size and difficulty stays under 0.02 s (about
+  0.5 s on a Kobo).
+- Opening the game no longer builds a puzzle it then throws away (it was
+  generated even when a saved game was about to be restored).
+- A "Generating puzzle…" progress bar shows when a puzzle takes more than a
+  moment. Needs game-common 1.12.0.
+
 ## [1.4.3] - 2026-11-03
 
 ### Changed

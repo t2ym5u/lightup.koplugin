@@ -62,6 +62,288 @@ describe("LightUpBoard", function()
         end)
     end)
 
+    -- 1.5.0: an array-based counter replaced the old one (same rules,
+    -- same counts; the old one took up to 6 s per 10x10 Easy puzzle on a
+    -- desktop and ran out of budget on most 14x14 layouts), and layouts
+    -- still ambiguous at full reveal get extra numbered walls. Keep the old
+    -- counter here and check the two agree, and that every size and
+    -- difficulty now yields a uniquely solvable puzzle, quickly.
+    describe("counter and generator", function()
+        local TYPE_WHITE, TYPE_BLACK_0, TYPE_BLACK_4 = 0, 2, 6
+        local DIR4 = { {-1,0},{1,0},{0,-1},{0,1} }
+        local function inBounds(r, c, n)
+            return r >= 1 and r <= n and c >= 1 and c <= n
+        end
+
+        -- The pre-1.5.0 counter, verbatim.
+        local function buildSegments(grid, n)
+            local row_seg, col_seg = {}, {}
+            for r = 1, n do row_seg[r] = {}; col_seg[r] = {} end
+            local row_cells, col_cells = {}, {}
+
+            for r = 1, n do
+                local c = 1
+                while c <= n do
+                    if grid[r][c] == TYPE_WHITE then
+                        local id = "r" .. r .. "_" .. c
+                        local cells = {}
+                        while c <= n and grid[r][c] == TYPE_WHITE do
+                            row_seg[r][c] = id
+                            cells[#cells + 1] = { r, c }
+                            c = c + 1
+                        end
+                        row_cells[id] = cells
+                    else
+                        c = c + 1
+                    end
+                end
+            end
+            for c = 1, n do
+                local r = 1
+                while r <= n do
+                    if grid[r][c] == TYPE_WHITE then
+                        local id = "c" .. r .. "_" .. c
+                        local cells = {}
+                        while r <= n and grid[r][c] == TYPE_WHITE do
+                            col_seg[r][c] = id
+                            cells[#cells + 1] = { r, c }
+                            r = r + 1
+                        end
+                        col_cells[id] = cells
+                    else
+                        r = r + 1
+                    end
+                end
+            end
+            return row_seg, col_seg, row_cells, col_cells
+        end
+
+        local function oldCountSolutions(grid, n, limit, node_budget)
+            local row_seg, col_seg, row_cells, col_cells = buildSegments(grid, n)
+
+            local decided = {}
+            for r = 1, n do decided[r] = {} end
+            local row_seg_bulb, col_seg_bulb = {}, {}
+
+            local solutions, nodes, exhausted = 0, 0, false
+
+            local function wallNeighbors(r, c)
+                local nbrs = {}
+                for _, d in ipairs(DIR4) do
+                    local nr, nc = r + d[1], c + d[2]
+                    if inBounds(nr, nc, n) and grid[nr][nc] == TYPE_WHITE then
+                        nbrs[#nbrs + 1] = { nr, nc }
+                    end
+                end
+                return nbrs
+            end
+
+            -- Checks the conflict BEFORE recording any state change -- a failed
+            -- call must leave everything untouched, otherwise undo() (which
+            -- decides whether to clear a segment's bulb flag based on whether
+            -- THIS cell is currently marked true) could wipe out a genuinely
+            -- different cell's legitimate bulb registration in the same segment.
+            local function setDecided(r, c, val, changes)
+                if decided[r][c] ~= nil then
+                    return decided[r][c] == val
+                end
+                if val then
+                    local rs, cs = row_seg[r][c], col_seg[r][c]
+                    if row_seg_bulb[rs] or col_seg_bulb[cs] then return false end
+                    row_seg_bulb[rs] = true
+                    col_seg_bulb[cs] = true
+                end
+                decided[r][c] = val
+                changes[#changes + 1] = { r, c }
+                return true
+            end
+
+            local function isLit(r, c)
+                return row_seg_bulb[row_seg[r][c]] or col_seg_bulb[col_seg[r][c]]
+            end
+
+            local function propagate(changes)
+                local progressed = true
+                while progressed do
+                    progressed = false
+                    for r = 1, n do
+                        for c = 1, n do
+                            local ct = grid[r][c]
+                            if ct >= TYPE_BLACK_0 and ct <= TYPE_BLACK_4 then
+                                local required = ct - TYPE_BLACK_0
+                                local nbrs = wallNeighbors(r, c)
+                                local have, undecided = 0, {}
+                                for _, cell in ipairs(nbrs) do
+                                    local v = decided[cell[1]][cell[2]]
+                                    if v == true then have = have + 1
+                                    elseif v == nil then undecided[#undecided + 1] = cell end
+                                end
+                                if have > required or have + #undecided < required then
+                                    return false
+                                end
+                                if #undecided > 0 then
+                                    if have == required then
+                                        for _, cell in ipairs(undecided) do
+                                            if not setDecided(cell[1], cell[2], false, changes) then return false end
+                                        end
+                                        progressed = true
+                                    elseif have + #undecided == required then
+                                        for _, cell in ipairs(undecided) do
+                                            if not setDecided(cell[1], cell[2], true, changes) then return false end
+                                        end
+                                        progressed = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    for r = 1, n do
+                        for c = 1, n do
+                            if grid[r][c] == TYPE_WHITE and not isLit(r, c) then
+                                local cand, seen = {}, {}
+                                for _, cell in ipairs(row_cells[row_seg[r][c]]) do
+                                    local key = cell[1] * 1000 + cell[2]
+                                    if decided[cell[1]][cell[2]] == nil and not seen[key] then
+                                        seen[key] = true; cand[#cand + 1] = cell
+                                    end
+                                end
+                                for _, cell in ipairs(col_cells[col_seg[r][c]]) do
+                                    local key = cell[1] * 1000 + cell[2]
+                                    if decided[cell[1]][cell[2]] == nil and not seen[key] then
+                                        seen[key] = true; cand[#cand + 1] = cell
+                                    end
+                                end
+                                if #cand == 0 then return false end
+                                if #cand == 1 then
+                                    if not setDecided(cand[1][1], cand[1][2], true, changes) then return false end
+                                    progressed = true
+                                end
+                            end
+                        end
+                    end
+                end
+                return true
+            end
+
+            local function undo(changes, from)
+                for i = #changes, from, -1 do
+                    local r, c = changes[i][1], changes[i][2]
+                    if decided[r][c] == true then
+                        row_seg_bulb[row_seg[r][c]] = false
+                        col_seg_bulb[col_seg[r][c]] = false
+                    end
+                    decided[r][c] = nil
+                    changes[i] = nil
+                end
+            end
+
+            local function allDecided()
+                for r = 1, n do
+                    for c = 1, n do
+                        if grid[r][c] == TYPE_WHITE and decided[r][c] == nil then return false end
+                    end
+                end
+                return true
+            end
+
+            local function pickBranchCell()
+                for r = 1, n do
+                    for c = 1, n do
+                        if grid[r][c] == TYPE_WHITE and not isLit(r, c) then
+                            for _, cell in ipairs(row_cells[row_seg[r][c]]) do
+                                if decided[cell[1]][cell[2]] == nil then return cell[1], cell[2] end
+                            end
+                            for _, cell in ipairs(col_cells[col_seg[r][c]]) do
+                                if decided[cell[1]][cell[2]] == nil then return cell[1], cell[2] end
+                            end
+                        end
+                    end
+                end
+                for r = 1, n do
+                    for c = 1, n do
+                        if grid[r][c] == TYPE_WHITE and decided[r][c] == nil then return r, c end
+                    end
+                end
+                return nil
+            end
+
+            local function search()
+                if solutions >= limit or exhausted then return end
+                nodes = nodes + 1
+                if nodes > node_budget then exhausted = true; return end
+
+                local changes = {}
+                if not propagate(changes) then
+                    undo(changes, 1)
+                    return
+                end
+
+                if allDecided() then
+                    solutions = solutions + 1
+                    undo(changes, 1)
+                    return
+                end
+
+                local r, c = pickBranchCell()
+                if not r then
+                    undo(changes, 1)
+                    return
+                end
+
+                for _, val in ipairs({ true, false }) do
+                    local branch_changes = {}
+                    if setDecided(r, c, val, branch_changes) then
+                        search()
+                    end
+                    undo(branch_changes, 1)
+                    if solutions >= limit or exhausted then break end
+                end
+                undo(changes, 1)
+            end
+
+            search()
+            return solutions, exhausted
+        end
+        it("counts the same solutions as the old counter on random layouts", function()
+            local dens = { 0.2, 0.28, 0.35 }
+            for _, n in ipairs({ 5, 7, 10 }) do
+                for seed = 1, 30 do
+                    math.randomseed(seed * 7177 + n)
+                    local base, bulbs = Board._generateBaseSolution(n, dens[seed % 3 + 1])
+                    if base then
+                        local grid = Board._assignWallNumbers(base, bulbs, n, ({ 0.3, 0.6, 0.8, 1.0 })[seed % 4 + 1])
+                        local so, eo = oldCountSolutions(grid, n, 3, 300000)
+                        local sn, en = Board._countSolutions(grid, n, 3, 1000000)
+                        if not eo then
+                            assert.is_false(en)
+                            assert.are.equal(so, sn, ("n=%d seed %d"):format(n, seed))
+                        end
+                    end
+                end
+            end
+        end)
+
+        it("builds uniquely solvable puzzles quickly at every size and difficulty", function()
+            for _, n in ipairs(Board.SIZES) do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    local worst = 0
+                    for seed = 1, 8 do
+                        math.randomseed(seed * 7919 + n)
+                        local t0 = os.clock()
+                        local b = Board:new{ n = n, difficulty = diff }
+                        worst = math.max(worst, os.clock() - t0)
+                        local count, exhausted, sol = Board._countSolutions(b.grid, n, 2, 10000000)
+                        assert.is_false(exhausted)
+                        assert.are.equal(1, count, ("n=%d %s seed %d not unique"):format(n, diff, seed))
+                        assert.are.same(b.solution, sol)
+                    end
+                    -- generous: ~0.05 s on a desktop
+                    assert.is_true(worst < 2.0, ("n=%d %s took %.2f s"):format(n, diff, worst))
+                end
+            end
+        end)
+    end)
+
     describe("cycleCell", function()
         it("cycles a white cell empty -> bulb -> dot -> empty", function()
             local b = newBoard()
