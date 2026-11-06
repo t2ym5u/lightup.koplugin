@@ -24,7 +24,7 @@ Place light bulbs in white cells of a grid so that:
 ## Features
 
 - **Multiple grid sizes** — 7×7, 10×10, 14×14
-- **Three difficulty levels** — Easy, Medium, Hard
+- **Three difficulty levels** — Easy, Medium, Hard, graded by the reasoning each puzzle needs (see below)
 - **Cell states** — empty, bulb, lit (yellow tint / hatched on greyscale), dot (confirmed empty)
 - **Constraint highlighting** — tap a numbered black cell to highlight its adjacent cells
 - **Illumination preview** — shows the lit area of a selected bulb
@@ -53,15 +53,18 @@ Place light bulbs in white cells of a grid so that:
 Illumination zones are static fill patterns (hatching) that refresh only when
 bulbs are placed or removed. No animation is needed between moves.
 
-## Known limitations
+## Difficulty
 
-At 7×7 and 10×10, generated puzzles are unique (exactly one valid bulb
-placement) far more reliably than before. 14×14 is a documented partial
-improvement: the search space at that size is large enough that proving
-uniqueness is often too expensive within generation's time budget, so
-those puzzles fall back to an unverified layout more often than the
-smaller sizes (still fully valid and completable, just not proven to be
-the only possible solution).
+Every puzzle has exactly one solution, and can be solved by logic alone:
+no level ever asks you to place a bulb "to see what happens".
+
+- **Easy** — the basic rules are enough: count the bulbs around a number,
+  and light a dark cell that only one cell can still light. Many numbers.
+- **Medium** — one or two steps (three at 14×14) need a classic pattern:
+  the cell diagonal to a number that can spare only one of its free
+  neighbours holds no bulb, and neither does the corner cell that sees the
+  last two cells able to light a dark cell. Fewer numbers.
+- **Hard** — at least three such steps (four at 14×14), few numbers.
 
 ## License
 

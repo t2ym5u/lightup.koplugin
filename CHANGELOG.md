@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-11-05
+
+### Changed
+- The three levels now really differ, and in the right order. Up to 1.5
+  the only difference was the share of black cells, and it worked
+  backwards: Easy (fewest walls) built the hardest grids, and about half
+  of the Easy and Medium grids could only be finished by trial and error
+  ("put a bulb here and see what breaks"). Every puzzle is now checked by
+  a solver that never guesses, and graded by what it needs:
+  - Easy: the basic rules only (count the bulbs around a number, light
+    the cell that only one cell can still light), with many numbers.
+  - Medium: one or two steps that need a named pattern (three at 14×14):
+    the cell diagonal to a number that can spare only one of its open
+    neighbours, or the corner cell that would block the last two ways to
+    light a dark cell. Fewer numbers.
+  - Hard: at least three such steps (four at 14×14), few numbers.
+  No level ever needs trial and error. Puzzles are new, and today's Daily
+  Challenge puzzle changes once.
+- Generation is faster: 14×14 Easy took up to 4 s on a desktop (well over
+  a minute on a Kobo); the slowest case is now 14×14 Hard, about 0.07 s
+  (under 2 s on a Kobo, with the progress bar).
+
+### Fixed
+- A numbered wall with the wrong number of bulbs next to it no longer
+  counts as solved: the game used to declare a win as soon as every cell
+  was lit and no two bulbs saw each other.
+
 ## [1.5.2] - 2026-11-04
 
 ### Fixed
