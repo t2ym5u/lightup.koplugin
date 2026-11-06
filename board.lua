@@ -25,8 +25,24 @@ local SIZES     = { 7, 10, 14 }
 local DEFAULT_N = 10
 local DEFAULT_DIFF = "medium"
 
--- Black cell density per difficulty
-local BLACK_DENSITY = { easy = 0.20, medium = 0.28, hard = 0.35 }
+-- What each level asks for (1.6.0; see logicSolve and generate). Up to
+-- 1.5, wall density was the only knob, and backwards: Easy's sparse walls
+-- made the hardest grids (half of 7x7 Easy needed trial and error).
+--   density        share of black cells in the layout
+--   tier           the hardest reasoning the puzzle may need
+--   keep           share of wall numbers never removed (Easy keeps more)
+--   min_t2/max_t2  how many tier-2 deductions the solution needs
+-- Easy: the basic rules all the way, with plenty of numbers.
+-- Medium: one or two named patterns (three at 14x14), few numbers.
+-- Hard: at least three of them (four at 14x14), few numbers.
+-- Never trial and error, at any level.
+local LEVELS = {
+    easy   = function(n) return { density = 0.30, tier = 1, keep = 0.6, min_t2 = 0, max_t2 = 0 } end,
+    medium = function(n) return { density = 0.28, tier = 2, keep = 0, min_t2 = 1,
+                                  max_t2 = n <= 10 and 2 or 3 } end,
+    hard   = function(n) return { density = 0.26, tier = 2, keep = 0,
+                                  min_t2 = n <= 10 and 3 or 4, max_t2 = math.huge } end,
+}
 
 -- ---------------------------------------------------------------------------
 -- Generator
@@ -133,12 +149,9 @@ local function generateBaseSolution(n, density)
     return nil, nil
 end
 
--- Randomly reveals a wall's bulb-adjacency count on ~60% of black cells.
--- Repicking which subset gets revealed (for the SAME base layout/bulbs) is
--- much cheaper than regenerating the whole black-cell+bulb layout, and a
--- different reveal choice can turn an ambiguous puzzle unique on its own
--- (more revealed counts can only add constraints) -- same lever as
--- shikaku's clue-cell repositioning.
+-- Reveals a wall's bulb-adjacency count on a share (reveal_ratio) of the
+-- black cells. Since 1.6.0 the generator numbers them all (1.0), then
+-- removes the numbers the solver can do without.
 local function assignWallNumbers(base_grid, bulbs, n, reveal_ratio)
     local grid = emptyGrid(n, n, TYPE_WHITE)
     for r = 1, n do
@@ -163,7 +176,9 @@ local function assignWallNumbers(base_grid, bulbs, n, reveal_ratio)
 end
 
 -- ---------------------------------------------------------------------------
--- Uniqueness counter. The win-check is genuinely rule-based (not a literal
+-- Uniqueness counter (since 1.6.0 only the specs use it, to cross-check
+-- logicSolve: the generator relies on the solver alone). The win-check is
+-- genuinely rule-based (not a literal
 -- comparison to a stored solution): any bulb placement where every white
 -- cell is lit, no two bulbs see each other, and every numbered wall's
 -- adjacent-bulb count matches exactly is accepted. Real uniqueness means:
@@ -409,25 +424,352 @@ local function countSolutions(grid, n, limit, node_budget)
     search()
     return solutions, exhausted, found[1], found[2]
 end
--- Node counts, not time, so a seed gives the same puzzle on any device;
--- the counter concludes well within this on every layout measured.
-local NODE_BUDGET = 100000
+-- ---------------------------------------------------------------------------
+-- Human-style solver (1.6.0). Grades a puzzle by the reasoning it needs,
+-- and never tries a bulb to see what breaks ("assume X, find a
+-- contradiction" is guessing, and no level may ask for it).
+--
+--   tier 1  the rules read straight off the grid:
+--           - a bulb's row and column (up to the walls) hold no other bulb;
+--           - a numbered wall that already has its count rules out its
+--             other neighbours; one whose open neighbours are exactly the
+--             bulbs it still needs takes them all (0 and 4 are the
+--             simplest cases);
+--           - a cell that is not lit yet and can only be lit from one cell
+--             left (itself or one cell it sees) gets a bulb there.
+--   tier 2  two named patterns, each a fact about what one cell sees,
+--           read off the grid without playing on:
+--           - "corner of a wall": a numbered wall that can spare only one
+--             of its open neighbours: the cell diagonal to it, between two
+--             of them, sees both, so it can't hold a bulb (the classic
+--             diagonal of a 3, of a 2 with three open sides, of a 1 with
+--             two);
+--           - "blocked view": a dark cell Y, ruled out itself, that only
+--             two cells can light, one in its row and one in its column:
+--             the cell at the fourth corner of that rectangle sees both,
+--             so a bulb there would leave Y dark for good.
+--
+-- Tier 2 is only used when tier 1 is stuck. Whatever the solver finishes
+-- has exactly one solution (every step is forced), so it doubles as the
+-- uniqueness proof.
+--
+-- logicSolve(grid, n, max_tier) -> solved, t1, t2, bulbs, used, open
+--   t1/t2: deductions of each tier (a "step" is one cell decided by one
+--   rule application); bulbs: the solution as a bool grid when solved;
+--   used: the numbered walls some deduction read, keyed (r - 1) * n + c
+--   (a number no deduction read can go: the same steps still work);
+--   open: when stuck, the undecided cells as { r, c } pairs.
+-- The generator calls it hundreds of times on one layout while it only
+-- removes numbers, so the layout's structure (white cells, segments,
+-- walls) is built once by prepareLayout and the numbers are read from the
+-- grid at each solve.
+-- ---------------------------------------------------------------------------
 
--- Escalating reveal ratios: the nominal ~60% reveal (matching the genre's
--- usual difficulty feel) is frequently ambiguous, especially at low black-
--- cell density ("easy"), but more revealed wall numbers can only ADD
--- constraints, never remove any -- so if the nominal ratio keeps coming
--- back ambiguous, try progressively denser reveals before tweaking the
--- layout. Same escalation shape as hitori's fix.
-local REVEAL_LEVELS = { 0.6, 0.8, 1.0 }
+local function prepareLayout(grid, n)
+    local idx, cr, cc = {}, {}, {}
+    local W = 0
+    for r = 1, n do
+        idx[r] = {}
+        for c = 1, n do
+            if grid[r][c] == TYPE_WHITE then
+                W = W + 1
+                idx[r][c], cr[W], cc[W] = W, r, c
+            end
+        end
+    end
+    local rseg, cseg, seg_cells, S = {}, {}, {}, 0
+    for pass = 1, 2 do
+        for a = 1, n do
+            local b = 1
+            while b <= n do
+                local r, c = a, b
+                if pass == 2 then r, c = b, a end
+                if idx[r][c] then
+                    S = S + 1
+                    local list = {}
+                    while b <= n do
+                        r, c = a, b
+                        if pass == 2 then r, c = b, a end
+                        local i = idx[r][c]
+                        if not i then break end
+                        if pass == 1 then rseg[i] = S else cseg[i] = S end
+                        list[#list + 1] = i
+                        b = b + 1
+                    end
+                    seg_cells[S] = list
+                else
+                    b = b + 1
+                end
+            end
+        end
+    end
+    -- Every black cell with a white neighbour (its number, if any, is read
+    -- at solve time).
+    local walls, wr, wc = {}, {}, {}
+    for r = 1, n do
+        for c = 1, n do
+            if grid[r][c] > TYPE_WHITE then
+                local nb = {}
+                for _, d in ipairs(DIR4) do
+                    local nr, nc = r + d[1], c + d[2]
+                    if nr >= 1 and nr <= n and nc >= 1 and nc <= n and idx[nr][nc] then
+                        nb[#nb + 1] = idx[nr][nc]
+                    end
+                end
+                walls[#walls + 1] = nb
+                wr[#walls], wc[#walls] = r, c
+            end
+        end
+    end
+    local cell_walls = {}   -- white cell -> the black cells next to it
+    for i = 1, W do cell_walls[i] = {} end
+    for w = 1, #walls do
+        for _, i in ipairs(walls[w]) do
+            local list = cell_walls[i]
+            list[#list + 1] = w
+        end
+    end
+    return { n = n, W = W, cr = cr, cc = cc, rseg = rseg, cseg = cseg,
+             seg_cells = seg_cells, S = S, walls = walls, wr = wr, wc = wc,
+             cell_walls = cell_walls, idx = idx }
+end
 
--- Still ambiguous with every wall numbered: pick a cell where a rival
--- solution has a bulb and ours doesn't (or, failing that, one whose count
--- of adjacent bulbs differs between the two), and turn it into a numbered
--- wall (its count of our bulbs). Our solution stays valid as long as every
--- white cell is still lit (the new wall only blocks light); the rival is
--- gone. Repeat until unique, or give up on this layout.
-local MAX_WALL_TWEAKS = 16
+local function solveLayout(P, grid, max_tier)
+    local n, W, rseg, cseg, seg_cells = P.n, P.W, P.rseg, P.cseg, P.seg_cells
+    -- The numbered walls of this grid.
+    local walls, wall_need, wall_key = {}, {}, {}
+    local num_of = {}       -- P's wall index -> index in walls, if numbered
+    local wall_r, wall_c = {}, {}
+    local idx = P.idx
+    for w = 1, #P.walls do
+        local t = grid[P.wr[w]][P.wc[w]]
+        if t >= TYPE_BLACK_0 and t <= TYPE_BLACK_4 then
+            local k = #walls + 1
+            walls[k], wall_need[k] = P.walls[w], t - TYPE_BLACK_0
+            wall_key[k] = (P.wr[w] - 1) * n + P.wc[w]
+            num_of[w] = k
+            wall_r[k], wall_c[k] = P.wr[w], P.wc[w]
+        end
+    end
+    local used = {}
+    local cell_walls = P.cell_walls
+
+    -- Work lists: segments and numbered walls whose cells changed since
+    -- they were last looked at (all of them at the start).
+    local segq, segin, wallq, wallin = {}, {}, {}, {}
+    for s = 1, P.S do segq[s], segin[s] = s, true end
+    for w = 1, #walls do wallq[w], wallin[w] = w, true end
+    local function touched(i)
+        local s = rseg[i]
+        if not segin[s] then segin[s] = true; segq[#segq + 1] = s end
+        s = cseg[i]
+        if not segin[s] then segin[s] = true; segq[#segq + 1] = s end
+        local cw = cell_walls[i]
+        for t = 1, #cw do
+            local k = num_of[cw[t]]
+            if k and not wallin[k] then wallin[k] = true; wallq[#wallq + 1] = k end
+        end
+    end
+
+    local val = {}          -- nil undecided / true bulb / false no bulb
+    local lit = {}          -- segment -> true once it holds a bulb
+    local und = {}          -- segment -> undecided cells left in it
+    for s = 1, P.S do lit[s], und[s] = false, #seg_cells[s] end
+    local bad = false
+
+    local function isLit(i)
+        return lit[rseg[i]] or lit[cseg[i]]
+    end
+    -- How many cells could still light cell i (i itself counted once).
+    local function lighterCount(i)
+        local k = und[rseg[i]] + und[cseg[i]]
+        if val[i] == nil then k = k - 1 end
+        return k
+    end
+    local function firstLighter(i)
+        if val[i] == nil then return i end
+        local a, b = seg_cells[rseg[i]], seg_cells[cseg[i]]
+        for t = 1, #a do if val[a[t]] == nil then return a[t] end end
+        for t = 1, #b do if val[b[t]] == nil then return b[t] end end
+    end
+    local function setNo(i)
+        if val[i] == nil then
+            val[i] = false
+            und[rseg[i]] = und[rseg[i]] - 1
+            und[cseg[i]] = und[cseg[i]] - 1
+            touched(i)
+        end
+    end
+    -- A bulb also settles every other cell of its row and column segments
+    -- (no bulb there): that is part of the same step.
+    local function setBulb(i)
+        if val[i] ~= nil then
+            if val[i] == false then bad = true end
+            return
+        end
+        if isLit(i) then bad = true; return end
+        val[i] = true
+        und[rseg[i]] = und[rseg[i]] - 1
+        und[cseg[i]] = und[cseg[i]] - 1
+        lit[rseg[i]], lit[cseg[i]] = true, true
+        touched(i)
+        local a, b = seg_cells[rseg[i]], seg_cells[cseg[i]]
+        for t = 1, #a do setNo(a[t]) end
+        for t = 1, #b do setNo(b[t]) end
+    end
+
+    local t1, t2 = 0, 0
+
+    -- Drains the work lists: walls first, then the cells of changed
+    -- segments, until nothing changes.
+    local function tier1()
+        while true do
+            local w = wallq[#wallq]
+            if w then
+                wallq[#wallq] = nil
+                wallin[w] = false
+                local nb = walls[w]
+                local have, open = 0, 0
+                for t = 1, #nb do
+                    local v = val[nb[t]]
+                    if v then have = have + 1 elseif v == nil then open = open + 1 end
+                end
+                local need = wall_need[w]
+                if have > need or have + open < need then bad = true; return end
+                if open > 0 and (have == need or have + open == need) then
+                    used[wall_key[w]] = true
+                    local to = have < need
+                    for t = 1, #nb do
+                        local j = nb[t]
+                        if val[j] == nil then
+                            if to then setBulb(j) else setNo(j) end
+                            t1 = t1 + 1
+                        end
+                    end
+                    if bad then return end
+                end
+            else
+                local s = segq[#segq]
+                if not s then return end
+                segq[#segq] = nil
+                segin[s] = false
+                local list = seg_cells[s]
+                for t = 1, #list do
+                    local i = list[t]
+                    if not isLit(i) then
+                        local k = lighterCount(i)
+                        if k <= 0 then bad = true; return end
+                        if k == 1 then
+                            setBulb(firstLighter(i))
+                            t1 = t1 + 1
+                            if bad then return end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- The white cell at (r, c), if any.
+    local function at(r, c)
+        local row = idx[r]
+        return row and row[c]
+    end
+
+    -- One tier-2 deduction (the first found), or false.
+    local function tier2()
+        -- Corner of a wall: a wall that can spare only one of its open
+        -- neighbours can't lose two, so the cell diagonal to it between
+        -- two open neighbours (it sees both) holds no bulb.
+        for w = 1, #walls do
+            local nb = walls[w]
+            local have, open = 0, 0
+            for t = 1, #nb do
+                local v = val[nb[t]]
+                if v then have = have + 1 elseif v == nil then open = open + 1 end
+            end
+            if open >= 2 and have + open - wall_need[w] == 1 then
+                local r, c = wall_r[w], wall_c[w]
+                for dr = -1, 1, 2 do
+                    for dc = -1, 1, 2 do
+                        local a, b, x = at(r + dr, c), at(r, c + dc), at(r + dr, c + dc)
+                        if a and b and x and val[a] == nil and val[b] == nil and val[x] == nil then
+                            used[wall_key[w]] = true
+                            setNo(x)
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+        -- Blocked view: a dark cell Y (no bulb itself) that only two cells
+        -- can light, one in its row and one in its column: the cell at the
+        -- fourth corner of that rectangle sees both, so a bulb there would
+        -- leave Y dark for good.
+        for y = 1, W do
+            if val[y] == false and not isLit(y) and lighterCount(y) == 2 then
+                local l_row, l_col
+                local a, b = seg_cells[rseg[y]], seg_cells[cseg[y]]
+                for t = 1, #a do if val[a[t]] == nil then l_row = a[t] end end
+                for t = 1, #b do if val[b[t]] == nil then l_col = b[t] end end
+                if l_row and l_col then
+                    local x = at(P.cr[l_col], P.cc[l_row])
+                    if x and val[x] == nil and cseg[x] == cseg[l_row] and rseg[x] == rseg[l_col] then
+                        setNo(x)
+                        return true
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    while true do
+        tier1()
+        if bad then return false, t1, t2 end
+        local done = true
+        for i = 1, W do
+            if not isLit(i) then done = false; break end
+        end
+        if done then
+            -- Every cell lit, so every cell is decided (a bulb rules out its
+            -- segments); the walls must all be met.
+            for w = 1, #walls do
+                local have = 0
+                for t = 1, #walls[w] do
+                    if val[walls[w][t]] then have = have + 1 end
+                end
+                if have ~= wall_need[w] then return false, t1, t2 end
+            end
+            local bulbs = emptyBoolGrid(n, n)
+            for i = 1, W do
+                if val[i] then bulbs[P.cr[i]][P.cc[i]] = true end
+            end
+            return true, t1, t2, bulbs, used
+        end
+        if max_tier < 2 or not tier2() then
+            local open = {}
+            for i = 1, W do
+                if val[i] == nil then open[#open + 1] = { P.cr[i], P.cc[i] } end
+            end
+            return false, t1, t2, nil, used, open
+        end
+        t2 = t2 + 1
+    end
+end
+
+local function logicSolve(grid, n, max_tier)
+    return solveLayout(prepareLayout(grid, n), grid, max_tier)
+end
+
+local function wallCount(bulbs, r, c, n)
+    local adj = 0
+    for _, d in ipairs(DIR4) do
+        local nr, nc = r + d[1], c + d[2]
+        if inBounds(nr, nc, n) and bulbs[nr][nc] then adj = adj + 1 end
+    end
+    return TYPE_BLACK_0 + adj
+end
 
 local function stillLit(grid, bulbs, n)
     local lit = emptyBoolGrid(n, n)
@@ -444,62 +786,49 @@ local function stillLit(grid, bulbs, n)
     return true
 end
 
-local function tweakUntilUnique(grid, bulbs, n, rival)
-    for step = 1, MAX_WALL_TWEAKS do
-        -- A rival bulb's cell first; else any cell whose wall number would
-        -- tell the two apart (a different count of adjacent bulbs).
-        local cands, others = {}, {}
-        for r = 1, n do
-            for c = 1, n do
-                if grid[r][c] == TYPE_WHITE and not bulbs[r][c] then
-                    if rival[r][c] then
-                        cands[#cands + 1] = { r, c }
-                    else
-                        local diff = 0
-                        for _, d in ipairs(DIR4) do
-                            local nr, nc = r + d[1], c + d[2]
-                            if inBounds(nr, nc, n) then
-                                if bulbs[nr][nc] then diff = diff + 1 end
-                                if rival[nr][nc] then diff = diff - 1 end
-                            end
-                        end
-                        if diff ~= 0 then others[#others + 1] = { r, c } end
-                    end
-                end
-            end
-        end
-        shuffle(cands)
-        shuffle(others)
-        for _, cell in ipairs(others) do cands[#cands + 1] = cell end
-        local placed = false
-        for _, cell in ipairs(cands) do
+-- Makes a layout the solver at max_tier finishes. While it is stuck, a
+-- cell it left open gets help: first the hidden numbers of the walls
+-- around it are shown, and when it has none left, the cell itself (if not
+-- a solution bulb, and if every white cell stays lit) becomes a numbered
+-- wall. Always ends: once every non-bulb cell is a numbered wall, each
+-- bulb is alone in its row and column and tier 1 places it. Returns the
+-- solved layout's structure, or nil if no open cell could take help.
+local function completeUntilSolved(grid, bulbs, n, max_tier)
+    local P = prepareLayout(grid, n)
+    while true do
+        local ok, _, _, _, _, open = solveLayout(P, grid, max_tier)
+        if ok then return P end
+        if not open then return nil end
+        shuffle(open)
+        local helped = false
+        for _, cell in ipairs(open) do
             local r, c = cell[1], cell[2]
-            grid[r][c] = TYPE_BLACK
-            if stillLit(grid, bulbs, n) then
-                local adj = 0
-                for _, d in ipairs(DIR4) do
-                    local nr, nc = r + d[1], c + d[2]
-                    if inBounds(nr, nc, n) and bulbs[nr][nc] then adj = adj + 1 end
+            for _, d in ipairs(DIR4) do
+                local nr, nc = r + d[1], c + d[2]
+                if inBounds(nr, nc, n) and grid[nr][nc] == TYPE_BLACK then
+                    grid[nr][nc] = wallCount(bulbs, nr, nc, n)
+                    helped = true
                 end
-                grid[r][c] = TYPE_BLACK_0 + adj
-                placed = true
-                break
             end
-            grid[r][c] = TYPE_WHITE
+            if helped then break end
         end
-        if not placed then return false, step - 1 end
-        local solutions, exhausted, first, second = countSolutions(grid, n, 2, NODE_BUDGET)
-        if exhausted or solutions == 0 then return false, step end
-        if solutions == 1 then return true, step end
-        rival = second
-        for r = 1, n do
-            for c = 1, n do
-                if first[r][c] ~= bulbs[r][c] then rival = first; break end
+        if not helped then
+            for _, cell in ipairs(open) do
+                local r, c = cell[1], cell[2]
+                if not bulbs[r][c] then
+                    grid[r][c] = TYPE_BLACK
+                    if stillLit(grid, bulbs, n) then
+                        grid[r][c] = wallCount(bulbs, r, c, n)
+                        P = prepareLayout(grid, n)
+                        helped = true
+                        break
+                    end
+                    grid[r][c] = TYPE_WHITE
+                end
             end
-            if rival == first then break end
         end
+        if not helped then return nil end
     end
-    return false, MAX_WALL_TWEAKS
 end
 
 -- ---------------------------------------------------------------------------
@@ -528,67 +857,69 @@ function LightUpBoard:new(opts)
     return obj
 end
 
--- The win-check is genuinely rule-based (see countSolutions' header) --
--- there's no "given" mask to dig, so like hitori/nurikabe/starbattle this
--- generates+verifies whole candidates instead. Measured pre-fix: severe,
--- real ambiguity (0% unique at easy/medium across every size, ~13% even
--- at hard). Repicking which black cells reveal their wall number (for the
--- SAME base black-cell+bulb layout) is much cheaper than regenerating that
--- layout from scratch, and more revealed numbers can only add constraints
--- -- same lever as shikaku's clue-cell repositioning: the reveal ratio
--- escalates in bounded steps (0.6 -> 0.8 -> 1.0), same shape as hitori's
--- density escalation.
---
--- Up to 1.4, low black-cell density ("easy") often stayed ambiguous even
--- with every wall numbered: 10x10 Easy shipped an unproven layout ~80% of
--- the time and 14x14 Easy nearly always, after up to 6 s of retries on a
--- desktop (minutes on a Kobo). Now a layout still ambiguous at full reveal
--- gets a few extra numbered walls (tweakUntilUnique) until it is unique.
+-- Layouts are drawn at the level's wall density, every wall gets its
+-- number, then numbers are removed one by one, in random order, as long
+-- as the solver limited to the level's tier still finishes (and, for a
+-- level with a tier-2 cap, within that cap). A candidate is kept when its
+-- tier-2 count lands in the level's window; otherwise the next layout is
+-- tried, and after ATTEMPTS layouts the closest one is used. Every grid
+-- that leaves here was finished by the solver: one solution, no guessing.
+-- All work is bounded by counts (same seed, same puzzle on every device).
 function LightUpBoard:generate(diff, on_progress)
     self.difficulty = diff or self.difficulty
     local n = self.n
-    local density = BLACK_DENSITY[self.difficulty] or 0.28
-    local base_attempts = 8
+    local level = (LEVELS[self.difficulty] or LEVELS.medium)(n)
+    local ATTEMPTS = LightUpBoard.ATTEMPTS[n] or 12
 
-    local best_grid, best_sol
-
-    for base_attempt = 1, base_attempts do
-        if on_progress then on_progress((base_attempt - 1) / base_attempts) end
-        local base_grid, bulbs = generateBaseSolution(n, density)
+    local best_grid, best_sol, best_score
+    for attempt = 1, ATTEMPTS do
+        if on_progress then on_progress((attempt - 1) / ATTEMPTS) end
+        local base_grid, bulbs = generateBaseSolution(n, level.density)
         if base_grid then
-            local grid, rival
-            for _, reveal_ratio in ipairs(REVEAL_LEVELS) do
-                grid = assignWallNumbers(base_grid, bulbs, n, reveal_ratio)
-
-                if not best_grid then
-                    best_grid, best_sol = grid, bulbs
-                end
-
-                local solutions, exhausted, first, second = countSolutions(grid, n, 2, NODE_BUDGET)
-                local unique = solutions == 1 and not exhausted
-                if not unique and not exhausted and solutions >= 2 then
-                    rival = second
-                    for r = 1, n do
-                        for c = 1, n do
-                            if first[r][c] ~= bulbs[r][c] then rival = first; break end
-                        end
-                        if rival == first then break end
+            local grid = assignWallNumbers(base_grid, bulbs, n, 1.0)
+            local P = completeUntilSolved(grid, bulbs, n, level.tier)
+            if P then
+                local numbered = {}
+                for r = 1, n do
+                    for c = 1, n do
+                        if grid[r][c] >= TYPE_BLACK_0 then numbered[#numbered + 1] = { r, c } end
                     end
-                else
-                    rival = nil
                 end
-                if not unique and rival and reveal_ratio == REVEAL_LEVELS[#REVEAL_LEVELS] then
-                    unique = tweakUntilUnique(grid, bulbs, n, rival)
+                shuffle(numbered)
+                local keep = math.floor(#numbered * level.keep + 0.5)
+                local left = #numbered
+                -- A number the last solve never read goes without a new
+                -- solve (the same steps still work); one it read costs a
+                -- solve to try.
+                local _, _, _, _, used = solveLayout(P, grid, level.tier)
+                for _, cell in ipairs(numbered) do
+                    if left <= keep then break end
+                    local r, c = cell[1], cell[2]
+                    local was = grid[r][c]
+                    grid[r][c] = TYPE_BLACK
+                    if not used[(r - 1) * n + c] then
+                        left = left - 1
+                    else
+                        local ok, _, t2, _, u = solveLayout(P, grid, level.tier)
+                        if ok and t2 <= level.max_t2 then
+                            left, used = left - 1, u
+                        else
+                            grid[r][c] = was
+                        end
+                    end
                 end
-                if unique then
-                    self.grid        = grid
-                    self.solution    = bulbs
-                    self.marks       = emptyGrid(n, n, MARK_EMPTY)
-                    self.wrong_cells = emptyBoolGrid(n, n)
-                    self.won         = false
-                    self.undo:clear()
-                    self:_recomputeLit()
-                    return
+                local ok, _, t2, sol = solveLayout(P, grid, level.tier)
+                if ok then
+                    if t2 >= level.min_t2 and t2 <= level.max_t2 then
+                        best_grid, best_sol = grid, sol
+                        break
+                    end
+                    -- Off the window: keep the closest, in case no layout
+                    -- lands in it.
+                    local score = t2 < level.min_t2 and level.min_t2 - t2 or t2 - level.max_t2
+                    if not best_score or score < best_score then
+                        best_grid, best_sol, best_score = grid, sol, score
+                    end
                 end
             end
         end
@@ -596,10 +927,12 @@ function LightUpBoard:generate(diff, on_progress)
 
     local grid, sol = best_grid, best_sol
     if not grid then
-        -- minimal fallback
-        grid = emptyGrid(n, n, TYPE_WHITE)
+        -- Unreachable in practice (completeUntilSolved always ends with a
+        -- solved grid); a single lit cell keeps the game playable.
+        grid = emptyGrid(n, n, TYPE_BLACK)
+        grid[1][1] = TYPE_WHITE
         sol  = emptyBoolGrid(n, n)
-        if n >= 1 then sol[1][1] = true end
+        sol[1][1] = true
     end
 
     self.grid        = grid
@@ -610,6 +943,7 @@ function LightUpBoard:generate(diff, on_progress)
     self.undo:clear()
     self:_recomputeLit()
 end
+
 
 function LightUpBoard:_recomputeLit()
     local n = self.n
@@ -748,6 +1082,24 @@ function LightUpBoard:_checkWin()
             end
         end
     end
+    -- Every numbered wall has exactly its count of adjacent bulbs (up to
+    -- 1.5 this rule was not checked, so a grid could win with a wrong
+    -- count).
+    for r = 1, n do
+        for c = 1, n do
+            local ct = self.grid[r][c]
+            if ct >= TYPE_BLACK_0 and ct <= TYPE_BLACK_4 then
+                local adj = 0
+                for _, d in ipairs(DIR4) do
+                    local nr, nc = r + d[1], c + d[2]
+                    if inBounds(nr, nc, n) and bulbs[nr][nc] then adj = adj + 1 end
+                end
+                if adj ~= ct - TYPE_BLACK_0 then
+                    self.won = false; return
+                end
+            end
+        end
+    end
     self.won = true
 end
 
@@ -826,7 +1178,13 @@ LightUpBoard.SIZES        = SIZES
 LightUpBoard.DEFAULT_N    = DEFAULT_N
 LightUpBoard.DIR4         = DIR4
 
+LightUpBoard.LEVELS       = LEVELS
+-- Layouts tried per puzzle, by size: small layouts are cheap but miss
+-- the Hard window more often.
+LightUpBoard.ATTEMPTS     = { [7] = 60, [10] = 30, [14] = 12 }
+
 -- for the specs
+LightUpBoard._logicSolve           = logicSolve
 LightUpBoard._countSolutions       = countSolutions
 LightUpBoard._generateBaseSolution = generateBaseSolution
 LightUpBoard._assignWallNumbers    = assignWallNumbers
