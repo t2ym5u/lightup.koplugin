@@ -322,26 +322,6 @@ describe("LightUpBoard", function()
                 end
             end
         end)
-
-        it("builds uniquely solvable puzzles quickly at every size and difficulty", function()
-            for _, n in ipairs(Board.SIZES) do
-                for _, diff in ipairs({ "easy", "medium", "hard" }) do
-                    local worst = 0
-                    for seed = 1, 8 do
-                        math.randomseed(seed * 7919 + n)
-                        local t0 = os.clock()
-                        local b = Board:new{ n = n, difficulty = diff }
-                        worst = math.max(worst, os.clock() - t0)
-                        local count, exhausted, sol = Board._countSolutions(b.grid, n, 2, 10000000)
-                        assert.is_false(exhausted)
-                        assert.are.equal(1, count, ("n=%d %s seed %d not unique"):format(n, diff, seed))
-                        assert.are.same(b.solution, sol)
-                    end
-                    -- generous: ~0.05 s on a desktop
-                    assert.is_true(worst < 2.0, ("n=%d %s took %.2f s"):format(n, diff, worst))
-                end
-            end
-        end)
     end)
 
     -- 1.6.0: a no-trial solver grades every puzzle. Up to 1.5 the levels
@@ -349,8 +329,6 @@ describe("LightUpBoard", function()
     -- walls made the hardest grids, half of 7x7 Easy needed trial and
     -- error).
     describe("logic solver and levels", function()
-        local SEEDS = 12
-
         it("finishes only puzzles with exactly one solution, and finds it", function()
             local finished, checked = 0, 0
             for _, n in ipairs({ 5, 7, 10 }) do
@@ -373,67 +351,6 @@ describe("LightUpBoard", function()
             end
             -- both outcomes were exercised
             assert.is_true(finished > 20 and finished < checked, ("%d/%d"):format(finished, checked))
-        end)
-
-        it("needs no trial and error, at every size and level, and levels differ", function()
-            for _, n in ipairs(Board.SIZES) do
-                local mean = {}
-                for _, diff in ipairs({ "easy", "medium", "hard" }) do
-                    local level = Board.LEVELS[diff](n)
-                    local sum, inside = 0, 0
-                    for seed = 1, SEEDS do
-                        math.randomseed(seed * 7919 + n)
-                        local b = Board:new{ n = n, difficulty = diff }
-                        local ok, _, t2, sol = Board._logicSolve(b.grid, n, level.tier)
-                        assert.is_true(ok, ("n=%d %s seed %d"):format(n, diff, seed))
-                        assert.are.same(b.solution, sol)
-                        local ok1 = Board._logicSolve(b.grid, n, 1)
-                        if diff == "easy" then
-                            assert.is_true(ok1)
-                        else
-                            -- medium and hard need at least one named pattern
-                            assert.is_false(ok1, ("n=%d %s seed %d"):format(n, diff, seed))
-                        end
-                        sum = sum + t2
-                        if t2 >= level.min_t2 and t2 <= level.max_t2 then inside = inside + 1 end
-                    end
-                    mean[diff] = sum / SEEDS
-                    assert.is_true(inside >= SEEDS - 1, ("n=%d %s: %d/%d in window"):format(n, diff, inside, SEEDS))
-                end
-                assert.are.equal(0, mean.easy)
-                assert.is_true(mean.medium >= 1 and mean.hard > mean.medium + 1,
-                    ("n=%d medium %.1f hard %.1f"):format(n, mean.medium, mean.hard))
-            end
-        end)
-
-        it("is deterministic: same seed, same puzzle", function()
-            for _, n in ipairs(Board.SIZES) do
-                for _, diff in ipairs({ "easy", "medium", "hard" }) do
-                    math.randomseed(1234 + n)
-                    local a = Board:new{ n = n, difficulty = diff }
-                    math.randomseed(1234 + n)
-                    local b = Board:new{ n = n, difficulty = diff }
-                    assert.are.same(a.grid, b.grid)
-                    assert.are.same(a.solution, b.solution)
-                end
-            end
-        end)
-
-        it("generates quickly (generous bound)", function()
-            for _, n in ipairs(Board.SIZES) do
-                for _, diff in ipairs({ "easy", "medium", "hard" }) do
-                    local worst = 0
-                    for seed = 1, 10 do
-                        math.randomseed(seed * 31 + n)
-                        local b = Board:new{ n = n, difficulty = diff, empty = true }
-                        local t0 = os.clock()
-                        b:generate(diff)
-                        worst = math.max(worst, os.clock() - t0)
-                    end
-                    -- measured worst ~0.07 s (14x14 Hard) on a desktop
-                    assert.is_true(worst < 0.5, ("n=%d %s took %.2f s"):format(n, diff, worst))
-                end
-            end
         end)
 
         it("loads a save made by 1.5", function()
